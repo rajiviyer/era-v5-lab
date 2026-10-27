@@ -1,0 +1,123 @@
+# Draft: G5 reference-harness measurements; other metrics and G8 collection cadences remain proposed.
+# G6 system counters and MFU method await confirmation. Collection cadence differs from the 10-step logger flush.
+# nats: cross-entropy using the natural logarithm (ln), averaged per predicted token; lower is better.
+# Loader, OPUS, recovery and distributed-communication metrics are left out on purpose until a producer exists.
+
+metrics:
+# --- Emitted by the G5 harness today ---
+# Is the model learning to predict the next token?
+- name: loss_ntp
+  unit: nats
+  cadence: Each completed optimizer step
+  source: G5 harness metrics.jsonl row from train.py run().
+  notes: Next-token cross entropy, mean over B*(L-1) positions; no loss mask in this harness. The trained loss is
+    loss_ntp + loss_mtp, so this is one part of it. Masking and reduction across ranks unresolved for production.
+# The other half of the trained loss; a failing second head would be missed without it.
+- name: loss_mtp
+  unit: nats
+  cadence: Each completed optimizer step
+  source: G5 harness metrics.jsonl row from train.py run().
+  notes: Cross entropy at t+2 from a second linear head, not a stacked MTP block; mean over B*(L-2) positions. No field
+    emits the trained sum loss_ntp + loss_mtp. The head is always present in this harness; behavior when disabled
+    is unresolved.
+# Kept only because the harness emits it; the logger must accept it without double-counting.
+- name: loss
+  unit: nats
+  cadence: Each completed optimizer step
+  source: G5 harness metrics.jsonl row from train.py run().
+  notes: Same value as loss_ntp; compatibility alias, not an additional loss to sum or count independently. Not the
+    trained loss (loss_ntp + loss_mtp).
+# Explains loss behavior and confirms the schedule ran as planned.
+- name: lr
+  unit: dimensionless
+  cadence: Each completed optimizer step
+  source: G5 harness metrics.jsonl row from train.py run().
+  notes: Learning rate for the step. This harness writes the constant configured optim.lr (one parameter group, no
+    scheduler), not a value read from the optimizer. Later harnesses should log the optimizer's actual value.
+# Training speed; a drop flags a slowdown even when the loss looks fine.
+- name: tokens_per_second
+  unit: tokens_per_second
+  cadence: Each completed optimizer step
+  source: G5 harness metrics.jsonl row from train.py run().
+  notes: Input tokens in the batch (B*L, including the last position, which has no next-token target) / step time.
+    The timer starts after the batch reaches the device and ends after the loss is read back, which waits for queued
+    GPU work; it excludes batch selection and transfer and the row write. Step 0 includes one-time setup. Not
+    loss-bearing throughput; padding and counting across ranks unresolved for production.
+# Model + gradient + optimizer memory; a steady rise means a leak or an approaching out-of-memory crash.
+- name: gpu_alloc_gb
+  unit: GiB
+  cadence: Each completed optimizer step
+  source: G5 harness metrics.jsonl row from train.py run().
+  notes: torch.cuda.memory_allocated(device) / 1024^3 after the step; the name says gb but the value is GiB. Tensors
+    PyTorch has allocated (weights, gradients and optimizer state at sampling time), not reserved or device-wide
+    memory (see gpu_memory_used). 0.0 on CPU. Per-device scope across ranks unresolved.
+
+# --- Core training health; not emitted yet, G5 to add ---
+# Earliest instability warning; usually spikes before the loss does.
+- name: gradient_norm
+  unit: gradient_units
+  cadence: Each completed optimizer step
+  source: Not emitted. G5 could log the return value of clip_grad_norm_ in train.py run().
+  notes: Global L2 norm of all gradients before clipping, as computed in this harness. Accumulation, unscaling and
+    reduction across ranks unresolved for production.
+# Clipping on most steps means a wrong threshold or an unstable run.
+- name: gradient_clipping_applied
+  unit: boolean
+  cadence: Each attempted optimizer update with gradients
+  source: Not emitted. Derivable in G5 from the clip_grad_norm_ return value and run.grad_clip.
+  notes: True when the global L2 norm exceeds run.grad_clip and gradients are scaled down. Handling of nonfinite
+    gradients and reduction across ranks unresolved.
+# Slowdowns in seconds and time-left estimates; the base that MFU and communication timing compare against.
+- name: optimizer_step_duration
+  unit: seconds
+  cadence: Each completed optimizer step
+  source: Not emitted. G5 harness step timer (elapsed in train.py run()).
+  notes: In this harness it equals B*L / tokens_per_second, with the same timer boundaries. Proposed to include all
+    accumulated microsteps once accumulation exists. Data waits and skipped updates unresolved.
+# Shows whether a step actually updated the model; explains stalled progress.
+- name: optimizer_step_skipped
+  unit: boolean
+  cadence: Each attempted optimizer update
+  source: Not available in this harness; future G5 AMP GradScaler or update controller.
+  notes: True when an attempted update is skipped. This harness has no skip path; a NaN loss stops the run after the
+    update. Skip causes, agreement across ranks and whether the step counter advances unresolved.
+# Only check that the model improves on unseen data; catches overfitting and contamination.
+- name: validation_loss
+  unit: nats
+  cadence: Each configured validation evaluation
+  source: G5 evaluation harness; not emitted by the reference harness.
+  notes: Loss for a versioned validation dataset and identified checkpoint. Confirm producer, objective, weighting,
+    reduction across ranks and evaluation schedule, including asynchronous runs.
+
+# --- System metrics; G6 to supply ---
+# Are the GPUs busy? Low values mean wasted time or hardware.
+- name: gpu_utilization
+  unit: percent
+  cadence: Every 10 seconds of wall-clock time, independent of optimizer steps
+  source: G6 GPU telemetry collector; counter unresolved.
+  notes: Busy-time percentage per GPU. G6 to confirm collector, sampling window, cadence and shared-device handling.
+# Whole-device memory, including what PyTorch's count misses; this decides out-of-memory crashes.
+- name: gpu_memory_used
+  unit: bytes
+  cadence: Every 10 seconds of wall-clock time, independent of optimizer steps
+  source: G6 GPU memory collector; counter unresolved.
+  notes: Device-level memory use. G6 to confirm collector and cadence. Distinct from gpu_alloc_gb (PyTorch-allocated,
+    GiB); convert units before comparing.
+# Share of peak compute actually used; the single efficiency number. G6 owns the method.
+- name: model_flops_utilization
+  unit: fraction
+  cadence: Each completed optimizer step or G6-defined aggregation window
+  source: G6 MFU method plus G5 harness inputs; method and fields unavailable.
+  notes: 'Proposed dense-model approximation: 6 * N * global compute-token rate / aggregate peak FLOPs per second.
+    G6 to confirm parameter counting, hardware precision, measurement window and attention/recomputation treatment.
+    This harness computes every expert before selecting top-k, so counting only active-expert parameters
+    understates compute. Do not substitute loss-bearing throughput without confirmation.'
+
+# --- Data ---
+# Tells a data-loader slowdown apart from a compute slowdown.
+- name: loader_wait_time
+  unit: seconds
+  cadence: Each completed optimizer step
+  source: G5 harness timers around loader waits; not emitted by the reference harness.
+  notes: Time a training rank blocks for input. G5/G6 to confirm timer boundaries, prefetch overlap and reporting
+    across ranks.
