@@ -94,25 +94,25 @@ metrics:
 # Are the GPUs busy? Low values may mean GPU time is being wasted.
 - name: gpu_utilization
   unit: percent
-  cadence: Every 10 seconds, independent of training steps
+  cadence: G6 samples every 1 second; G8 rolls up into 10-second windows (mean and min)
   source: G6 GPU monitoring tool (to be confirmed).
-  notes: Percentage of time each GPU is busy. G6 to confirm the tool and how often it samples.
+  notes: Percentage of time each GPU is busy. G6 to confirm the tool.
 # Total memory used on the GPU, including what PyTorch does not count. Closer to what triggers out-of-memory
 # crashes than gpu_alloc_gb.
 - name: gpu_memory_used
   unit: bytes
-  cadence: Every 10 seconds, independent of training steps
-  source: G6 GPU monitoring tool (to be confirmed).
+  cadence: G6 samples every 1 second; G8 rolls up into 10-second windows (max)
+  source: G6 GPU monitoring tool (to be confirmed). G6 reports MiB; G8 converts to bytes (x 1,048,576).
   notes: Memory used on the whole GPU. Measured in bytes, while gpu_alloc_gb is in GiB, so convert before
-    comparing them.
+    comparing them. G6 to confirm it is device-wide memory, not PyTorch reserved memory.
 # Model FLOPs utilization (MFU): how much of the GPUs' peak compute is actually used. G6 owns the method.
 - name: model_flops_utilization
   unit: fraction
   cadence: Every training step, or a window G6 chooses
-  source: G6 calculation using numbers from train.py (method not ready yet).
+  source: G6 field metrics.mfu, using dtype-specific peak FLOPs.
   notes: Rough formula is 6 x number of parameters x tokens per second / peak FLOPs per second of all GPUs. G6 to
     confirm the details. train.py runs every expert, not only the chosen ones, so counting only the chosen experts
-    would make MFU look too low.
+    would make MFU look too low. null means peak FLOPs is unknown; treat it as missing, not 0.
 
 # --- Data ---
 # Tells a slow data loader apart from slow GPU work.
