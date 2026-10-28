@@ -1,123 +1,123 @@
-# Draft: G5 reference-harness measurements; other metrics and G8 collection cadences remain proposed.
-# G6 system counters and MFU method await confirmation. Collection cadence differs from the 10-step logger flush.
-# nats: cross-entropy using the natural logarithm (ln), averaged per predicted token; lower is better.
-# Loader, OPUS, recovery and distributed-communication metrics are left out on purpose until a producer exists.
+# Draft metric list for G8 monitoring. Each metric has a name, unit, cadence (how often it is collected), source and notes.
+# Values from the G5 training script (train.py) are checked against its code. Everything else is a proposal.
+# Cadences are proposals too. They are separate from the logger, which writes to storage every 10 steps.
+# G6 still has to confirm the system metrics and how MFU is calculated.
+# Unit "nats": average loss per predicted token, using the natural log. Lower is better.
+# Other data loader metrics (cache, shard reads, packing), OPUS, recovery and multi-GPU communication metrics are
+# left out until something produces them.
+# train.py also writes a field called loss. It is a copy of loss_ntp, so it is left out of this list and should not
+# be counted as a separate loss.
 
 metrics:
-# --- Emitted by the G5 harness today ---
+# --- Written by the G5 training script today ---
 # Is the model learning to predict the next token?
 - name: loss_ntp
   unit: nats
-  cadence: Each completed optimizer step
-  source: G5 harness metrics.jsonl row from train.py run().
-  notes: Next-token cross entropy, mean over B*(L-1) positions; no loss mask in this harness. The trained loss is
-    loss_ntp + loss_mtp, so this is one part of it. Masking and reduction across ranks unresolved for production.
-# The other half of the trained loss; a failing second head would be missed without it.
+  cadence: Every training step
+  source: G5 train.py, one row per step in metrics.jsonl.
+  notes: Loss for predicting the next token, averaged over the positions that have a next token. The model trains on
+    loss_ntp + loss_mtp, so this is only part of the training loss. To confirm for real runs - masking and
+    combining values across GPUs.
+# The other part of the training loss. Without it, a broken second head would go unnoticed.
 - name: loss_mtp
   unit: nats
-  cadence: Each completed optimizer step
-  source: G5 harness metrics.jsonl row from train.py run().
-  notes: Cross entropy at t+2 from a second linear head, not a stacked MTP block; mean over B*(L-2) positions. No field
-    emits the trained sum loss_ntp + loss_mtp. The head is always present in this harness; behavior when disabled
-    is unresolved.
-# Kept only because the harness emits it; the logger must accept it without double-counting.
-- name: loss
-  unit: nats
-  cadence: Each completed optimizer step
-  source: G5 harness metrics.jsonl row from train.py run().
-  notes: Same value as loss_ntp; compatibility alias, not an additional loss to sum or count independently. Not the
-    trained loss (loss_ntp + loss_mtp).
-# Explains loss behavior and confirms the schedule ran as planned.
+  cadence: Every training step
+  source: G5 train.py, one row per step in metrics.jsonl.
+  notes: Loss for predicting the token two positions ahead, from a second output head. No field holds the total
+    loss_ntp + loss_mtp. The second head is always on in train.py. To confirm - what happens when it is off.
+# Helps explain changes in the loss and check that the learning-rate schedule ran as planned.
 - name: lr
   unit: dimensionless
-  cadence: Each completed optimizer step
-  source: G5 harness metrics.jsonl row from train.py run().
-  notes: Learning rate for the step. This harness writes the constant configured optim.lr (one parameter group, no
-    scheduler), not a value read from the optimizer. Later harnesses should log the optimizer's actual value.
-# Training speed; a drop flags a slowdown even when the loss looks fine.
+  cadence: Every training step
+  source: G5 train.py, one row per step in metrics.jsonl.
+  notes: Learning rate for the step. train.py has no schedule, so it writes the same configured value every step.
+    Later versions should log the value the optimizer actually used.
+# Training speed. A drop can reveal a slowdown even when the loss looks fine.
 - name: tokens_per_second
   unit: tokens_per_second
-  cadence: Each completed optimizer step
-  source: G5 harness metrics.jsonl row from train.py run().
-  notes: Input tokens in the batch (B*L, including the last position, which has no next-token target) / step time.
-    The timer starts after the batch reaches the device and ends after the loss is read back, which waits for queued
-    GPU work; it excludes batch selection and transfer and the row write. Step 0 includes one-time setup. Not
-    loss-bearing throughput; padding and counting across ranks unresolved for production.
-# Model + gradient + optimizer memory; a steady rise means a leak or an approaching out-of-memory crash.
+  cadence: Every training step
+  source: G5 train.py, one row per step in metrics.jsonl.
+  notes: All input tokens in the batch divided by the step time. The timer covers the GPU work of the step, not
+    loading the batch or writing the log row. Step 0 is slower because of one-time setup. To confirm for real
+    runs - padding and counting across GPUs.
+# Memory PyTorch is using (weights, gradients, optimizer state). A steady rise may point to a leak or a coming
+# out-of-memory crash.
 - name: gpu_alloc_gb
   unit: GiB
-  cadence: Each completed optimizer step
-  source: G5 harness metrics.jsonl row from train.py run().
-  notes: torch.cuda.memory_allocated(device) / 1024^3 after the step; the name says gb but the value is GiB. Tensors
-    PyTorch has allocated (weights, gradients and optimizer state at sampling time), not reserved or device-wide
-    memory (see gpu_memory_used). 0.0 on CPU. Per-device scope across ranks unresolved.
+  cadence: Every training step
+  source: G5 train.py, one row per step in metrics.jsonl.
+  notes: Memory PyTorch has allocated after the step. The name says gb, but the value is GiB (divided by 1024^3).
+    Name kept to match train.py. Does not include memory PyTorch has reserved or other processes are using
+    (see gpu_memory_used). 0.0 when running on CPU.
 
-# --- Core training health; not emitted yet, G5 to add ---
-# Earliest instability warning; usually spikes before the loss does.
+# --- Training health; proposed, waiting for G5 to confirm ---
+# Early warning of unstable training. It often spikes before the loss does.
 - name: gradient_norm
   unit: gradient_units
-  cadence: Each completed optimizer step
-  source: Not emitted. G5 could log the return value of clip_grad_norm_ in train.py run().
-  notes: Global L2 norm of all gradients before clipping, as computed in this harness. Accumulation, unscaling and
-    reduction across ranks unresolved for production.
-# Clipping on most steps means a wrong threshold or an unstable run.
+  cadence: Every training step
+  source: Not written yet. train.py already calculates it (clip_grad_norm_) but does not log it. Proposed for G5
+    to log.
+  notes: Size of all gradients combined, before clipping. To confirm for real runs - combining across GPUs.
+# Clipping on most steps is worth checking. The threshold may be wrong or training may be unstable.
 - name: gradient_clipping_applied
   unit: boolean
-  cadence: Each attempted optimizer update with gradients
-  source: Not emitted. Derivable in G5 from the clip_grad_norm_ return value and run.grad_clip.
-  notes: True when the global L2 norm exceeds run.grad_clip and gradients are scaled down. Handling of nonfinite
-    gradients and reduction across ranks unresolved.
-# Slowdowns in seconds and time-left estimates; the base that MFU and communication timing compare against.
-- name: optimizer_step_duration
-  unit: seconds
-  cadence: Each completed optimizer step
-  source: Not emitted. G5 harness step timer (elapsed in train.py run()).
-  notes: In this harness it equals B*L / tokens_per_second, with the same timer boundaries. Proposed to include all
-    accumulated microsteps once accumulation exists. Data waits and skipped updates unresolved.
-# Shows whether a step actually updated the model; explains stalled progress.
-- name: optimizer_step_skipped
-  unit: boolean
-  cadence: Each attempted optimizer update
-  source: Not available in this harness; future G5 AMP GradScaler or update controller.
-  notes: True when an attempted update is skipped. This harness has no skip path; a NaN loss stops the run after the
-    update. Skip causes, agreement across ranks and whether the step counter advances unresolved.
-# Only check that the model improves on unseen data; catches overfitting and contamination.
+  cadence: Every training step
+  source: Not written yet. Proposed for G5 to work out from gradient_norm and the clipping threshold
+    (run.grad_clip).
+  notes: True when gradient_norm is above the threshold and the gradients were scaled down.
+# How big each update is compared with the weights. Very large may mean unstable training; very small may mean
+# learning has stalled.
+- name: update_weight_ratio
+  unit: dimensionless
+  cadence: Every N training steps (N to be agreed)
+  source: Not written yet. Proposed for G5 to add around the optimizer step in train.py.
+  notes: Proposed formula is L2 norm of (weights after - weights before) / L2 norm of weights before. A copy of
+    the weights is needed only on the steps being measured. To agree - one value for the whole model or one per
+    layer, and what to do when the weights are zero.
+# Are the experts sharing the work? A few experts getting most of the routing may mean routing has collapsed.
+- name: expert_load
+  unit: fraction
+  cadence: Every training step
+  source: Not written yet. Proposed for G5 to count which experts the router picks in train.py.
+  notes: Each token picks top-k experts. Proposed value is each expert's share of all these picks (tokens x k), so
+    the shares add up to 1 for each expert layer. This is a list of values, not one number. To agree - this
+    definition, and a single summary number for alarms, such as busiest expert / average expert.
+# The main check in this list that the model improves on data it has not trained on. Helps spot overfitting.
 - name: validation_loss
   unit: nats
-  cadence: Each configured validation evaluation
-  source: G5 evaluation harness; not emitted by the reference harness.
-  notes: Loss for a versioned validation dataset and identified checkpoint. Confirm producer, objective, weighting,
-    reduction across ranks and evaluation schedule, including asynchronous runs.
+  cadence: Each validation run
+  source: G5 evaluation script; not written by train.py.
+  notes: Loss on a fixed validation dataset for a given checkpoint. To confirm with G5 - who produces it, how it
+    is calculated and how often it runs.
 
 # --- System metrics; G6 to supply ---
-# Are the GPUs busy? Low values mean wasted time or hardware.
+# Are the GPUs busy? Low values may mean GPU time is being wasted.
 - name: gpu_utilization
   unit: percent
-  cadence: Every 10 seconds of wall-clock time, independent of optimizer steps
-  source: G6 GPU telemetry collector; counter unresolved.
-  notes: Busy-time percentage per GPU. G6 to confirm collector, sampling window, cadence and shared-device handling.
-# Whole-device memory, including what PyTorch's count misses; this decides out-of-memory crashes.
+  cadence: Every 10 seconds, independent of training steps
+  source: G6 GPU monitoring tool (to be confirmed).
+  notes: Percentage of time each GPU is busy. G6 to confirm the tool and how often it samples.
+# Total memory used on the GPU, including what PyTorch does not count. Closer to what triggers out-of-memory
+# crashes than gpu_alloc_gb.
 - name: gpu_memory_used
   unit: bytes
-  cadence: Every 10 seconds of wall-clock time, independent of optimizer steps
-  source: G6 GPU memory collector; counter unresolved.
-  notes: Device-level memory use. G6 to confirm collector and cadence. Distinct from gpu_alloc_gb (PyTorch-allocated,
-    GiB); convert units before comparing.
-# Share of peak compute actually used; the single efficiency number. G6 owns the method.
+  cadence: Every 10 seconds, independent of training steps
+  source: G6 GPU monitoring tool (to be confirmed).
+  notes: Memory used on the whole GPU. Measured in bytes, while gpu_alloc_gb is in GiB, so convert before
+    comparing them.
+# Model FLOPs utilization (MFU): how much of the GPUs' peak compute is actually used. G6 owns the method.
 - name: model_flops_utilization
   unit: fraction
-  cadence: Each completed optimizer step or G6-defined aggregation window
-  source: G6 MFU method plus G5 harness inputs; method and fields unavailable.
-  notes: 'Proposed dense-model approximation: 6 * N * global compute-token rate / aggregate peak FLOPs per second.
-    G6 to confirm parameter counting, hardware precision, measurement window and attention/recomputation treatment.
-    This harness computes every expert before selecting top-k, so counting only active-expert parameters
-    understates compute. Do not substitute loss-bearing throughput without confirmation.'
+  cadence: Every training step, or a window G6 chooses
+  source: G6 calculation using numbers from train.py (method not ready yet).
+  notes: Rough formula is 6 x number of parameters x tokens per second / peak FLOPs per second of all GPUs. G6 to
+    confirm the details. train.py runs every expert, not only the chosen ones, so counting only the chosen experts
+    would make MFU look too low.
 
 # --- Data ---
-# Tells a data-loader slowdown apart from a compute slowdown.
+# Tells a slow data loader apart from slow GPU work.
 - name: loader_wait_time
   unit: seconds
-  cadence: Each completed optimizer step
-  source: G5 harness timers around loader waits; not emitted by the reference harness.
-  notes: Time a training rank blocks for input. G5/G6 to confirm timer boundaries, prefetch overlap and reporting
-    across ranks.
+  cadence: Every training step
+  source: G5 timers around the data loader; not written by train.py yet.
+  notes: Time the training loop waits for the next batch. G5 and G6 to confirm where the timer starts and stops.
