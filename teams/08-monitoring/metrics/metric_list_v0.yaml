@@ -1,9 +1,10 @@
 # Draft metric list for G8 monitoring. Each metric has a name, unit, cadence (how often it is collected), source and notes.
 # Values from the G5 training script (train.py) are checked against its code. Everything else is a proposal.
 # Cadences are proposals too. They are separate from the logger, which writes to storage every 10 steps.
-# G6 still has to confirm the system metrics and how MFU is calculated.
+# G6 metrics are described in teams/06-performance/docs/METRICS.md. Today G6 writes them as a summary after each
+# benchmark run. G8 has asked for per-GPU records it can read during the run; waiting for G6 to confirm.
 # Unit "nats": average loss per predicted token, using the natural log. Lower is better.
-# Other data loader metrics (cache, shard reads, packing), OPUS, recovery and multi-GPU communication metrics are
+# Other data loader metrics (cache, shard reads, packing), recovery and multi-GPU communication metrics are
 # left out until something produces them.
 # train.py also writes a field called loss. It is a copy of loss_ntp, so it is left out of this list and should not
 # be counted as a separate loss.
@@ -95,29 +96,34 @@ metrics:
 - name: gpu_utilization
   unit: percent
   cadence: G6 samples every 1 second; G8 rolls up into 10-second windows (mean and min)
-  source: G6 GPU monitoring tool (to be confirmed).
-  notes: Percentage of time each GPU is busy. G6 to confirm the tool.
+  source: G6 GpuSampler field gpu_util_pct (nvidia-smi utilization.gpu).
+  notes: Percentage of time at least one GPU kernel was running. This is not how fully the GPU is used, so one
+    small kernel at a time can still show 100%.
 # Total memory used on the GPU, including what PyTorch does not count. Closer to what triggers out-of-memory
 # crashes than gpu_alloc_gb.
 - name: gpu_memory_used
   unit: bytes
   cadence: G6 samples every 1 second; G8 rolls up into 10-second windows (max)
-  source: G6 GPU monitoring tool (to be confirmed). G6 reports MiB; G8 converts to bytes (x 1,048,576).
-  notes: Memory used on the whole GPU. Measured in bytes, while gpu_alloc_gb is in GiB, so convert before
-    comparing them. G6 to confirm it is device-wide memory, not PyTorch reserved memory.
+  source: G6 GpuSampler field mem_used_mib (nvidia-smi memory.used). G6 sends MiB; G8 converts to bytes
+    (x 1,048,576).
+  notes: Memory used on the whole GPU by all processes, not only PyTorch. Stored in bytes, while gpu_alloc_gb
+    is in GiB, so convert before comparing them.
 # Model FLOPs utilization (MFU): how much of the GPUs' peak compute is actually used. G6 owns the method.
 - name: model_flops_utilization
   unit: fraction
-  cadence: Every training step, or a window G6 chooses
-  source: G6 field metrics.mfu, using dtype-specific peak FLOPs.
-  notes: Rough formula is 6 x number of parameters x tokens per second / peak FLOPs per second of all GPUs. G6 to
-    confirm the details. train.py runs every expert, not only the chosen ones, so counting only the chosen experts
-    would make MFU look too low. null means peak FLOPs is unknown; treat it as missing, not 0.
+  cadence: One value per G6 benchmark run today (from the median step time)
+  source: G6 run JSON field metrics.mfu. G8 uses this value as is and does not recalculate it.
+  notes: G6 formula is tokens per second x model FLOPs per token / peak FLOPs per second for the run's dtype.
+    Model FLOPs per token counts only the chosen experts. null means the peak is unknown; treat it as missing,
+    not 0. To confirm with G6 - whether it works for G5's train.py (which runs every expert), whether it covers
+    one GPU or the whole run, and the field that gives the reason when it is null.
 
 # --- Data ---
 # Tells a slow data loader apart from slow GPU work.
 - name: loader_wait_time
   unit: seconds
   cadence: Every training step
-  source: G5 timers around the data loader; not written by train.py yet.
-  notes: Time the training loop waits for the next batch. G5 and G6 to confirm where the timer starts and stops.
+  source: Proposed - G6 field data_ms (milliseconds; G8 converts to seconds). Not written by G5's train.py.
+  notes: Time the training loop waits for the next batch. G6's data_ms times only the host-side next_batch() call,
+    and today it is a run summary, not one value per step. To confirm with G6 - that this is the right boundary,
+    and adding per-step values.
