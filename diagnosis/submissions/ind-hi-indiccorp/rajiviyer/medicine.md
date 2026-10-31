@@ -1,80 +1,228 @@
 # Medicine sheet: ind-hi-indiccorp (rajiviyer)
 
-151 documents reviewed: 137 clean, 12 fix, 2 drop.
-Disease counts: F1: 8, C1: 2, C3: 2, C4: 1, G1: 1. These counts cover the
-reviewed documents only. F1 is the only disease above the five-document threshold.
-Update the counts after reviewing the rest of the pack.
+500 documents reviewed: 440 clean, 44 fix, 16 drop.
+Disease counts: F1: 25, C3: 16, D4: 6, C1: 7, A3: 5, C4: 5,
+D3: 3, D2: 2, G1: 1, C5: 1. A document can have several codes.
+
+Findings that do not match a defined disease, including minor spelling, grammar
+and spacing errors, are marked clean with comments in notes. Clean therefore
+means no applicable disease found, not error-free writing. English names,
+technical units and bracketed name/term glosses alone are not treated as D3;
+romanised Hindi and substantial Hindi-English mixing are recorded separately.
+
+The automatic rules below are prototypes tuned on this pack. Test results cover
+only 130 of the 272 published Hindi gold documents: the other 142 texts were not
+available locally. This is not a held-out test or a claim of complete cleaning.
+Each rule takes original text only, with no document IDs or supplied span lists.
+Run these rules before any NFC conversion, which can shift character offsets.
 
 ## F1: Personal data
 
+**Disease:** F1
+
 ### Examples
 
-Offsets below are zero-based Unicode character positions in the original text.
-Only types and positions are recorded; personal values and their hex are omitted.
+25 documents are labelled F1. Evidence gives types and zero-based character
+offsets only; no personal values or hex are reproduced.
 
 - `f9000a9730dae0f2`: phone number at offset 19.
-- `954b27485b7c0a57`: private-person residential location and identity at offsets
-  16 and 99.
-- `2b7609cd44409223`: school/locality at offset 0; child and parent identity at
-  71; further school/locality/class details at 281 and child identity at 330.
-
-Other F1 documents: `9031920b80e46fd3`, `ebe1660c7122bfa0`, `abedb7f2c18bb7c7`,
-`22f07929bcd3fe6b`, and `43809153c133f60b`.
+- `954b27485b7c0a57`: private-person identity and residential details at offsets 16 and 99.
+- `2b7609cd44409223`: school/locality at 0, child and parent identity at 71,
+  further school details at 281 and child identity at 330.
 
 ### Rule and action
 
-Replace confirmed personal details with `[REDACTED]`; retain the news narrative.
-Do not drop the document.
-
-A reviewer must identify each full start/end range in the original text,
-including repeated identifying details. End positions are exclusive.
-The offsets in labels.csv indicate evidence starts, not complete ranges.
-
-Do not automatically redact every name, number or place. Consider the context,
-including whether someone is mentioned in a public professional role.
-
-The function applies reviewed ranges; it does not detect personal data.
-It preserves surrounding text, including ZWJ/ZWNJ, and replaces ranges in
-reverse order to keep offsets valid.
-
-Run the gold-set harm test before using this rule at scale.
+Fix by masking phone-like numbers and limited name/parentage/residence patterns
+with `[REDACTED]`. A small filter avoids some generic uses of निवासी. The rule
+does not drop documents. Public professional names should not be removed blindly.
 
 ```python
-def redact_confirmed_spans(text, spans):
-    """Redact manually confirmed original-text spans; never log their values."""
-    ordered = sorted(spans)
-    previous_end = 0
-    for start, end in ordered:
-        if not (0 <= start < end <= len(text)) or start < previous_end:
-            raise ValueError("Invalid or overlapping redaction spans")
-        previous_end = end
-    for start, end in reversed(ordered):
-        text = text[:start] + "[REDACTED]" + text[end:]
-    return text
+import re
+
+_PHONE = re.compile(r"(?<![\d.,])(?:\+?91[\s-]?)?[6-9]\d{9}(?!\d)")
+_TOKEN = r"[^\s,।.()]+"
+_RESIDENT = re.compile(rf"{_TOKEN}(?:\s+{_TOKEN})?\s*(?:\(\s*\d{{1,3}}\s*\)\s*)?(?:(?:पुत्र|पुत्री|पत्नी)\s+{_TOKEN}(?:\s+{_TOKEN})?\s+)?निवासी\s+{_TOKEN}(?:\s+{_TOKEN})?")
+_NOT_PERSON = re.compile(r"(?:मूल|स्थानीय|के|का|की|में|से)\s+निवासी|निवासी\s+(?:ही|नहीं|हैं|है)")
+
+def medicine_f1(text):
+    text = _PHONE.sub("[REDACTED]", text)
+    return _RESIDENT.sub(lambda m: m.group(0) if _NOT_PERSON.search(m.group(0)) else "[REDACTED]", text)
 ```
 
-### Harm test: pending
+### Harm test
 
-Not yet run; awaiting the Hindi gold set approved by two readers.
-Will report documents tested, changed and dropped.
-The medicine fails if more than 1% of gold documents are changed or dropped.
+Published 130-document subset: changed 1/130 (0.77%); dropped 0/130.
+PASS at the 1% threshold; ZWJ/ZWNJ and normal-form checks passed on changed text.
+The changed document is `e11903157ed9b336`.
+
+Coverage against the current labels: the rule acts on 14 of 25 F1 documents
+and one clean document, `e11903157ed9b336`. Eleven F1 documents are missed.
+The action on the clean document is a false positive under the final review.
+A match does not guarantee that every personal detail has been removed.
+Human review or a better entity detector is still required.
 
 ### Possible mistakes
 
-- Numeric patterns may flag dates, quantities or other identifiers as phones.
-- Removing names or places unnecessarily can lose useful reporting context.
-- Redacting only one mention may leave a person identifiable elsewhere.
-- Readers may choose different ranges; agree on the review criteria first.
+- Dates or other numbers may resemble phones.
+- The limited residence pattern can miss or incompletely mask names and places.
+- Repeated names, family relationships and sensitive details can remain identifying.
+- The rule changes one document accepted as clean. Review matches before applying them.
+- Results on this pack do not establish the error rate on new data.
 
-## Other diseases
+## C1: Boilerplate
 
-C1: 2 documents; C3: 2 documents; C4: 1 document; G1: 1 document.
-These are below the threshold for a required medicine section.
+**Disease:** C1
 
-C4 example: `972d8cf63e8d0ed9` joins unrelated tax-raid reporting, a bank-directory
-passage starting at offset 503, and an impeachment passage starting at offset
-1274. It is labelled fix. Verify the source and split the passages into separate
-documents where reliable boundaries can be established.
+### Examples
 
-No general boilerplate-removal, truncation-drop, document-splitting or Indic-repair
-rule has been tested yet.
+Seven documents contain C1.
+
+- `7f8cfa9789fcd35a`: "Also Read - Viral Video:" at offset 416.
+- `30bb38cf2f84eed7`: "Also Read -" at offset 310.
+- `d3ec691647a71ee4`: "पढ़ें पूरी खबर" at offset 272.
+
+### Rule and action
+
+Fix by removing matching end-of-text recommendation controls and a limited set
+of leading listen/photo markers. Other markers and joined articles need review.
+
+```python
+import re
+
+_C1_TAIL = re.compile(r"\s*(?:Also Read\s*-|पढ़ें पूरी खबर\s*$)[^\n]*$")
+_C1_HEAD = re.compile(r"^\W*(?:पूरी खबर सुने|फोटो-{3,}\S*(?:\s+\S+){0,3}?)\s+")
+
+def medicine_c1(text):
+    return _C1_HEAD.sub("", _C1_TAIL.sub("", text))
+```
+
+### Harm test
+
+Published 130-document subset: changed 0/130; dropped 0/130. PASS at 1%.
+Coverage: acts on 5 of 7 C1 documents, with no actions on other labelled rows.
+No changed gold documents were available to exercise joiner/form preservation.
+
+### Possible mistakes
+
+- A quoted marker may be useful article content.
+- A pattern may remove too much text after a marker or miss multiline controls.
+- Removing boilerplate does not recover missing text or separate joined articles.
+
+## C3: Truncated documents
+
+**Disease:** C3
+
+### Examples
+
+16 documents contain C3.
+
+- `79b479e5b5911e1c`: "लेकिन जुलाई खत्म होने को आया, य" at offset 301.
+- `03a2a8b37cd767ef`: "देवताओं ने भगवान की" at offset 418.
+- `5b08a22cbcafb46a`: "जानते हैं मॉनसून" at offset 381; promised tips are absent.
+
+### Rule and action
+
+Recover the source continuation where possible. Otherwise this prototype keeps
+the text through the last sentence boundary for teaser endings such as ellipsis,
+dash or colon; it drops the document if no such boundary exists. For other
+unpunctuated endings, it drops text ending in a short/function word. Empty text
+is left alone. It returns text to fix, True to drop, or False to keep.
+
+The label remains a human reading decision: this heuristic does not detect all
+truncation. Review the kept passage to ensure it makes sense on its own.
+
+```python
+import re
+
+_C3_PUNCT = "।.!?॥\"'”’)]|:I"
+_C3_FUNC = {"की", "के", "का", "कि", "को", "में", "पर", "से", "ने", "और", "या", "व", "तो", "भी", "ही", "हुए", "वाले"}
+
+def medicine_c3(text):
+    end = text.rstrip()
+    if not end:
+        return False
+    if end.endswith(("…", "...", "-", "—", ":")):
+        cut = max(end.rfind("।"), end.rfind(". "), end.rfind("? "), end.rfind("! "))
+        return end[:cut + 1] if cut > 0 else True
+    if end[-1] in _C3_PUNCT or end[-1].isdigit():
+        return False
+    last = end.split()[-1]
+    return len(last) <= 2 or last in _C3_FUNC
+```
+
+### Harm test
+
+Published 130-document subset: changed 0/130; dropped 0/130. PASS at 1%.
+Coverage: acts on 13 of 16 C3 documents, with no actions on other labelled rows.
+No changed gold documents were available to exercise joiner/form preservation.
+
+### Possible mistakes
+
+- Short words, headings, dialogue and intentional excerpts can trigger false drops.
+- Decimal points, abbreviations and punctuation can produce a wrong cut point.
+- Complete-looking punctuation may hide an incomplete document; three labelled
+  cases are missed. Source recovery is better than guessing missing text.
+
+## D4: Bad machine translation
+
+**Disease:** D4
+
+### Examples
+
+Six documents contain D4.
+
+- `5dd727a460cad090`: "सह-लेटरल" at offset 29 and "सह-अक्षर मुक्त ऋण" at 178.
+- `768303341eb0e28e`: "एक धमाके की धड़कन" at offset 252.
+- `4724780d3ef785bc`: "भविष्य के पुरस्कार प्रदान करेगी" at offset 21; "एजेंट को दूसरों को सलाह देंगे" at offset 230; literal wording distorts the intended meaning.
+
+### Rule and action
+
+A fluent Hindi reader checks whether the wording changes or obscures the
+intended meaning. Compare the original source where available; ordinary typos,
+loanwords and unfamiliar technical terms alone are not enough.
+
+Use fix for a source-backed correction that preserves meaning. Use drop where
+the meaning is badly damaged and reliable retranslation is not available.
+There is no automatic detector or coded D4 medicine in this sheet.
+
+### Harm test: not run
+
+The manual translation-review route has not been tested on the gold set.
+No D4 pass is claimed. The automatic-rule results do not cover this section.
+
+### Possible mistakes
+
+- Technical or formal Hindi can be mistaken for bad translation.
+- A plausible rewrite may change the source meaning.
+- Readers may disagree; obtain a second fluent review for uncertain cases.
+
+## Other diseases and observations
+
+A3: 5; C4: 5; D3: 3; D2: 2; G1: 1; C5: 1. These do not exceed five
+occurrences, so separate medicine sections are not required.
+
+For A3, suspected legacy-font damage is recorded under the closest code; the
+exact cause is not established. Check sources before changing characters.
+Shifted-nukta spellings also appear in `29b9313c01b1ca8d` and
+`5e80298a68d26e06`; these remain clean under the chosen spelling policy.
+Possible missing anusvara is noted without a disease label in
+`df88a94dfa78e5d1`, `7d8d2eea7b66d210`, `f6ef705ed9db26bc`,
+`9d31cd38c41fa33e`, `b0027bae44bdb50b` and `90e2f77e4c43828c`.
+
+Check sources before splitting C4 documents. `da9a77345e9eaa4c` is retained as
+clean because its cyclone aside may relate to the satellite launch.
+Preserve ZWJ/ZWNJ; no general encoding-repair or document-splitting rule is tested.
+
+## Gold-set scope
+
+Gold source: `teams/02-data-b/gold/ind-hi-indiccorp_gold.csv`, upstream main
+commit `5a1c5f3d5b0bc0a292503ea1689049ac9d415e73`. All 130 published IDs were used, unchanged.
+
+All 130 published gold documents are accepted as clean in the final labels.
+The gold set was not edited and no IDs were excluded. The full 272-document
+Hindi gold set was not tested. The F1 change to `e11903157ed9b336` counts as a
+false positive and remains included in the harm result.
+
+F1, C1 and C3 together change 1/130 (0.77%) and drop 0: PASS on this subset.
+Their low observed harm does not establish complete redaction, held-out quality,
+or a D4 pass. The rules were tuned using this same pack.
